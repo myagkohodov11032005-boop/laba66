@@ -1,0 +1,137 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  lint:
+    name: Линтинг (pylint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Установка Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Установка зависимостей
+        run: |
+          python -m venv venv
+          . venv/bin/activate
+          pip install pylint pytest
+
+      - name: Запуск pylint
+        continue-on-error: true   # чтобы пайплайн не падал на предупреждениях
+        run: |
+          . venv/bin/activate
+          pylint *.py --output-format=json > pylint-report.json || true
+          pylint *.py > pylint.txt || true
+
+      - name: Загрузка отчётов как артефактов
+        uses: actions/upload-artifact@v4
+        with:
+          name: pylint-report
+          path: |
+            pylint.txt
+            pylint-report.json
+          retention-days: 14
+
+
+  test:
+    name: Тесты + покрытие
+    runs-on: ubuntu-latest
+    needs: lint                     # можно убрать, если хочешь 100% параллельно
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Установка Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Установка зависимостей
+        run: |
+          pip install pytest pytest-cov
+
+      - name: Запуск тестов с покрытием
+        run: |
+          pytest --junitxml=junit.xml --cov=. --cov-report=xml:coverage.xml --cov-report=html
+
+      - name: Загрузка артефактов тестов
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            junit.xml
+            coverage.xml
+            htmlcov/
+          retention-days: 30
+
+
+  security:
+    name: Проверка уязвимостей (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Установка Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Установка pip-audit
+        run: pip install pip-audit
+
+      - name: Сканирование зависимостей
+        continue-on-error: true
+        run: |
+          pip-audit --format json > vulnerabilities.json
+          pip-audit --format columns
+
+      - name: Загрузка отчёта по безопасности
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: vulnerabilities.json
+          retention-days: 14
+
+
+  build:
+    name: Сборка и проверка установки
+    runs-on: ubuntu-latest
+    needs: [lint, test, security]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Установка зависимостей
+        run: pip install -r requirements.txt
+      - name: Проверка, что всё импортируется
+        run: python -c "from calc import add, factorial; print('Всё ок:', add(2,3), factorial(5))"
+
+
+  # =============================================
+  # Уведомления в Slack при падении любого job
+  # =============================================
+  slack-notification:
+    name: Slack уведомление об ошибке
+    if: failure()
+    needs: [lint, test, security, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Отправка в Slack
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "Пайплайн упал! ${{ github.repository }} #${{ github.run_number }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Посмотреть в GitHub Actions>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
