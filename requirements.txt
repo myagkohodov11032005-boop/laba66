@@ -1,0 +1,4 @@
+requests==2.28.1      # ← известная CVE в 2022–2023
+flask==2.2.0
+pytest
+pylint
